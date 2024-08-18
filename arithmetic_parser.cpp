@@ -166,7 +166,7 @@ void ArithmeticTokenizer::Parse(char c) {
         case OPER_BIT_OR:  if (c == OPER_BIT_OR)  { this->tokens.back().oper = OPER_LOGICAL_OR;  return; }
         case OPER_BIT_AND: if (c == OPER_BIT_AND) { this->tokens.back().oper = OPER_LOGICAL_AND; return; }
         case OPER_PAREN_RIGHT:
-        if (c != OPER_PAREN_LEFT) { // "()" is not allowed. (we could pop_back())
+        if (c != OPER_PAREN_RIGHT) { // "()" is not allowed. (we could pop_back())
             this->tokens.push_back({ .oper = c, .type = Token::OPERATOR});
             return;
         }
@@ -174,6 +174,7 @@ void ArithmeticTokenizer::Parse(char c) {
         }
         PARSER_LOG("failed to parse operator");
         this->failed = true;
+        return;
     }
     PARSER_ASSERT(false);
 }
