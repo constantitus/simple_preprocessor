@@ -34,6 +34,8 @@
 
 #pragma once
 
+#define PARSER_IGNORE_UNKNOWN_DIRECTIVE
+
 #include <initializer_list>
 #include <string>
 #include <vector>

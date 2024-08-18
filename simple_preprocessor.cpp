@@ -33,6 +33,9 @@
 #   define PARSER_NAME "Preprocessor"
 #endif
 
+// Prefix. Can be changed in case it clashes with another preprocessor
+#define _PFX '#'
+
 #define PARSER_PRINTF(msg, ...) printf(msg, ##__VA_ARGS__)
 #define PARSER_LOG(msg, ...) PARSER_PRINTF(PARSER_NAME": " msg "\n", ##__VA_ARGS__)
 #define PARSER_ASSERT(condition) assert(condition);
@@ -108,8 +111,8 @@ void ParserInternal::ParseExpression(std::string_view expr, Conditional eval) {
         break;
 
     case COND_ELIF:
-        if (prev_cond == COND_ELSE) { INTERNAL_FAIL("#elif after #else"); break; }
-        if (!in_nested_loop)        { INTERNAL_FAIL("#elif without #if"); break; }
+        if (prev_cond == COND_ELSE) { INTERNAL_FAIL("elif after else"); break; }
+        if (!in_nested_loop)        { INTERNAL_FAIL("elif without if"); break; }
 
         curr_result = TokenizeAndEvaluate(expr);
         condition.top().result = (!consumed && curr_result) && in_true_loop;
@@ -119,8 +122,8 @@ void ParserInternal::ParseExpression(std::string_view expr, Conditional eval) {
         break;
 
     case COND_ELSE:
-        if (prev_cond == COND_ELSE) { INTERNAL_FAIL("#else after #else"); break; }
-        if (!in_nested_loop)        { INTERNAL_FAIL("#else without #if"); break; }
+        if (prev_cond == COND_ELSE) { INTERNAL_FAIL("else after else"); break; }
+        if (!in_nested_loop)        { INTERNAL_FAIL("else without if"); break; }
 
         condition.top().result = !consumed && in_true_loop;
         condition.top().consumed = true;
@@ -129,7 +132,7 @@ void ParserInternal::ParseExpression(std::string_view expr, Conditional eval) {
         break;
 
     case COND_ENDIF:
-        if (!in_nested_loop)        { INTERNAL_FAIL("#endif without #if"); break; }
+        if (!in_nested_loop)        { INTERNAL_FAIL("endif without if"); break; }
         PARSER_ASSERT(prev_cond != COND_ENDIF); // endif always pops
 
         condition.pop();
@@ -141,8 +144,12 @@ void ParserInternal::ParseExpression(std::string_view expr, Conditional eval) {
     }
 }
 
-
 bool ParserInternal::ParseDirective(std::string_view expr) {
+    expr.remove_prefix(1); // the prefix
+    // Get rid of spaces inbetween the prefix and the expression
+    while (*expr.data() == ' ' || *expr.data() == '\t')
+        expr.remove_prefix(1);
+
     if (expr.compare(0, 2, "if") == 0) {
         expr.remove_prefix(2);
         if (*expr.data() != ' ')
@@ -271,12 +278,7 @@ std::string SimplePreprocessor::Parse(const char *input_buffer, size_t buflen) {
 
         // Sometimes we want to append the directive too.
         bool append = true;
-        if (*row_final.data() == '#') {
-            row_final.remove_prefix(1);
-
-            while (*row_final.data() == ' ' || *row_final.data() == '\t')
-                row_final.remove_prefix(1);
-
+        if (*row_final.data() == _PFX) {
             append = internal.ParseDirective(row_final);
         }
 
