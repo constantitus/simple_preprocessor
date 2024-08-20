@@ -191,9 +191,9 @@ void ArithmeticTokenizer::Parse(std::string_view tok_view) {
         }
     }
 
-    char *test;
-    operand_t number = std::strtol(tok_view.data(), &test, 10);
-    if (test != tok_view.data() + tok_view.length())
+    char *verify_length;
+    operand_t number = std::strtol(tok_view.data(), &verify_length, 10);
+    if (verify_length != tok_view.data() + tok_view.length())
         number = 0;
         // token is not a number (e.x. 123a would not be valid)
         // silently default it to 0

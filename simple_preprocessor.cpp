@@ -20,11 +20,7 @@
 #include <unordered_map>
 #include <vector>
 #include <string_view>
-#if defined(__has_include)
-#   if __has_include(<alloca.h>)
-#       include <alloca.h>
-#   endif
-#endif
+#include <alloca.h>
 
 #include "arithmetic_parser.hpp"
 #include "simple_preprocessor.hpp"
@@ -33,7 +29,7 @@
 #   define PARSER_NAME "Preprocessor"
 #endif
 
-// Prefix. Can be changed in case it clashes with another preprocessor
+// Prefix. Can be changed in case you want to use this with another preprocessor
 #define _PFX '#'
 
 #define PARSER_PRINTF(msg, ...) printf(msg, ##__VA_ARGS__)
@@ -60,8 +56,10 @@ enum Conditional : unsigned char {
 };
 
 struct ParserInternal {
-    bool FindAndReplaceMacro(std::string& modified_buffer, std::string_view line);
+    bool FindAndReplaceMacro(std::string& tmp_buffer, std::string_view line);
     bool ParseDirective(std::string_view expr);
+    void DirectOutput(std::string_view expr);
+
     void ParseExpression(std::string_view expr, Conditional directive);
     inline bool TokenizeAndEvaluate(std::string_view expr) {
         while (*expr.data() == ' ' || *expr.data() == '\t')
@@ -75,7 +73,9 @@ struct ParserInternal {
         return result.first != 0;
     }
 
-    std::unordered_map<std::string_view, int> defines;
+    std::unordered_map<std::string_view, std::variant<std::string_view, int>> defines;
+    unsigned int current_output_idx = 0;
+    // unsigned int expected_outputs;
 
     struct ConditionalBranch {
         bool result;
@@ -144,9 +144,26 @@ void ParserInternal::ParseExpression(std::string_view expr, Conditional eval) {
     }
 }
 
+void ParserInternal::DirectOutput(std::string_view expr) {
+    // TODO: this will fail if there are spaces after the index.
+    while (*expr.data() == ' ' || *expr.data() == '\t')
+        expr.remove_prefix(1);
+
+    char *verify_length;
+    int number = std::strtol(expr.data(), &verify_length, 10);
+    if (verify_length != expr.data() + expr.length()) {
+        INTERNAL_FAIL("expected index in output directive");
+        return;
+    }
+
+    // TODO: Limit max number of outputs to one specified by the user
+    this->current_output_idx = number;
+}
+
 bool ParserInternal::ParseDirective(std::string_view expr) {
-    expr.remove_prefix(1); // the prefix
-    // Get rid of spaces inbetween the prefix and the expression
+    expr.remove_prefix(1); // '#'
+
+    // get rid of spaces inbetween the prefix and the expression
     while (*expr.data() == ' ' || *expr.data() == '\t')
         expr.remove_prefix(1);
 
@@ -165,7 +182,14 @@ bool ParserInternal::ParseDirective(std::string_view expr) {
         return false;
     }
 
-    // TODO: ensure there are no extra tokens after else and elif
+    // TODO: ensure there are no extra tokens after the directive
+    if (expr.compare(0, 6, "output") == 0) {
+        expr.remove_prefix(6);
+        if (*expr.data() != ' ')
+            goto no_value;
+        DirectOutput(expr);
+        return false;
+    }
     if (expr.compare(0, 4, "else") == 0) {
         expr.remove_prefix(4);
         ParseExpression(expr, COND_ELSE);
@@ -197,70 +221,97 @@ constexpr bool MaybePartOfWord(char c) {
            c == '_';
 }
 
-bool ParserInternal::FindAndReplaceMacro(std::string& modified_buf, std::string_view line_view) {
-    modified_buf.clear();
+bool ParserInternal::FindAndReplaceMacro(std::string& tmp_buf, std::string_view line_view) {
+    tmp_buf.clear();
     bool found = false;
 
     std::string_view current_view = line_view;
-    unsigned int word_length = 0;
+    unsigned int word_len;
 
-    // NOTE: this is a bit dirty and it could probably be cleaner
-    while (word_length < current_view.length()) {
-        if (!MaybePartOfWord(*(current_view.data() + word_length))) {
-            if (word_length > 0) {
-                auto kv_pair = this->defines.find({current_view.data(), word_length});
+    while (word_len < current_view.length()) {
+        if (!MaybePartOfWord(*(current_view.data() + word_len))) {
+            if (word_len > 0) {
+                size_t before_len = current_view.data() - line_view.data();
+
+                auto kv_pair = this->defines.find({current_view.data(), word_len});
                 if (kv_pair != this->defines.end()) {
                     found = true;
-                    modified_buf.append(line_view.data(), current_view.data() - line_view.data());
+                    // append whatever is before the macro
+                    size_t before_len = current_view.data() - line_view.data();
+                    tmp_buf.append(line_view.data(), before_len);
+                    line_view.remove_prefix(before_len + word_len);
 
-                    // convert value to string
-                    int value = kv_pair->second;
-                    int value_len = std::snprintf(nullptr, 0, "%i", value) + 1;
-#if defined(alloca)
-                    char *value_str = (char *)alloca(value_len * sizeof(char));
-#else
-                    char value_str[value_len]; // This is an extension
-#endif
-                    std::snprintf(value_str, value_len, "%i", value);
+                    auto& value_var = kv_pair->second;
+                    if (std::holds_alternative<int>(value_var)) {
+                        int *pvalue = std::get_if<int>(&value_var);
 
-                    // append the value
-                    modified_buf.append(value_str);
-                    line_view.remove_prefix(current_view.data() - line_view.data() + word_length);
+                        int value_len = std::snprintf(nullptr, 0, "%i", *pvalue) + 1;
+                        char *value_buf = (char *)alloca(value_len * sizeof(char));
+                        std::snprintf(value_buf, value_len, "%i", *pvalue);
+                        value_len -= 1; // - the null terminator, we don't want that int the output.
+
+                        tmp_buf.append(value_buf, value_len);
+                    } else if (std::holds_alternative<std::string_view>(value_var)) {
+                        std::string_view *pvalue = std::get_if<std::string_view>(&value_var);
+
+                        tmp_buf.append(pvalue->data(), pvalue->length());
+                    } else {
+                        PARSER_ASSERT(false); // something went very wrong if this triggers
+                    }
                 } else if (found) {
-                    modified_buf.append(line_view.data(), current_view.data() - line_view.data() + word_length);
-                    line_view.remove_prefix(current_view.data() - line_view.data() + word_length);
+                    tmp_buf.append(line_view.data(), before_len + word_len);
+                    line_view.remove_prefix(before_len + word_len);
                 }
-                current_view.remove_prefix(word_length);
-                word_length = 0;
+
+                current_view.remove_prefix(word_len);
+                word_len = 0;
             } else {
                 current_view.remove_prefix(1);
             }
         } else {
-            word_length++;
+            word_len++;
         }
     }
-    // Append the remainder of non-word characters after the last word
-    if (found)
-        modified_buf.append(line_view.data(), current_view.data() - line_view.data() - 1);
+
+    // append the rest of the line
+    if (found) {
+        tmp_buf.append(line_view.data(), current_view.data() - line_view.data());
+    }
 
     return found;
 }
 
-std::string SimplePreprocessor::Parse(const char *input_buffer, size_t buflen) {
+std::vector<std::string> SimplePreprocessor::Parse(const char *input_buffer, size_t buflen) {
     if (buflen == 0) {
         PARSER_LOG(PARSER_NAME": you passed a empty buffer.");
         return {};
     }
 
     ParserInternal internal;
-    internal.defines = std::unordered_map<std::string_view, int>(this->global_defines.begin(), this->global_defines.end());
+    
+    // I don't like this
+    for (auto &def : this->global_defines) {
+        auto& value_variant = def.second;
+        if (std::holds_alternative<int>(value_variant)) {
+            int *pvalue = std::get_if<int>(&value_variant);
+            internal.defines[def.first] = *pvalue;
+            continue;
+        }
+        if (std::holds_alternative<std::string>(value_variant)) {
+            std::string *pvalue = std::get_if<std::string>(&value_variant);
+            internal.defines[def.first] = *pvalue;
+            continue;
+        }
+        PARSER_ASSERT(false);
+    }
 
-    std::string output;
+    std::vector<std::string> result;
 
     // used only when we find something during the macro processing pass
     std::string tmp_buf;
     std::string_view input_view(input_buffer, buflen);
 
+    
     while (!input_view.empty()) {
         if (internal.failed)
             return {};
@@ -273,14 +324,23 @@ std::string SimplePreprocessor::Parse(const char *input_buffer, size_t buflen) {
         // Macro preprocessor pass
         bool found = internal.FindAndReplaceMacro(tmp_buf, {input_view.data(), next_pos + 1});
         if (found) {
-            row_final = tmp_buf;
+            row_final = {tmp_buf.data(), tmp_buf.length() - 1};
         }
 
-        // Sometimes we want to append the directive too.
+        // Parse thee directive (we sometimes want to append it to the output)
         bool append = true;
         if (*row_final.data() == _PFX) {
             append = internal.ParseDirective(row_final);
         }
+
+        // NOTE: This is dirty. If (hypothetically) the indices we're getting from
+        // the file are 0 and 14, we're going to have 15 strings, out of which 13
+        // are unused.
+        // TODO: Allow the user to specify the amount of outputs expected and handle
+        // cases where the file declares more than that
+        if (internal.current_output_idx >= result.size())
+            result.resize(internal.current_output_idx + 1);
+        std::string& output = result[internal.current_output_idx];
 
         if (append) {
             if (internal.condition.empty() ||
@@ -301,10 +361,10 @@ std::string SimplePreprocessor::Parse(const char *input_buffer, size_t buflen) {
         return {};
     }
 
-    return output;
+    return result;
 }
 
-std::string SimplePreprocessor::Parse(std::string const& input_buffer) {
+std::vector<std::string> SimplePreprocessor::Parse(std::string const& input_buffer) {
     return this->Parse(input_buffer.data(), input_buffer.size());
 }
 
