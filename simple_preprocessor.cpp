@@ -226,7 +226,7 @@ bool ParserInternal::FindAndReplaceMacro(std::string& tmp_buf, std::string_view 
     bool found = false;
 
     std::string_view current_view = line_view;
-    unsigned int word_len;
+    unsigned int word_len = 0;
 
     while (word_len < current_view.length()) {
         if (!MaybePartOfWord(*(current_view.data() + word_len))) {
